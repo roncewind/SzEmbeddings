@@ -104,6 +104,14 @@ CREATE INDEX ON NAME_EMBEDDING USING ivfflat (embedding vector_cosine_ops) WITH 
 SET ivfflat.probes = 10;
 ```
 
+#### Setup Senzing env
+
+```
+/opt/senzing/er/bin/sz_create_project <senzing_project_path>
+cd <senzing_project_path>
+source setupEnv
+```
+
 #### Senzing config: add artifacts for embeddings
 
 - initial config file can be found at `resources/templates/g2config.json`
@@ -112,8 +120,8 @@ SET ivfflat.probes = 10;
 
 ```
 ./bin/sz_configtool
-addFeature {"feature": "NAME_EMBEDDING", "class": "ISSUED_ID", "behavior": "NAME", "anonymize": "No", "candidates": "No", "standardize": "", "expression": "", "comparison": "SEMANTIC_SIMILARITY_COMP", "matchKey": "Yes", "version": 1, "elementList": [{"element": "EMBEDDING", "expressed": "No", "compared": "Yes", "derived": "Yes", "display": "No"}, {"element": "ALGORITHM", "expressed": "No", "compared": "Yes", "derived": "No", "display": "No"}, {"element": "LABEL", "expressed": "No", "compared": "No", "derived": "No", "display": "Yes"}]}
-addFeature {"feature": "BIZNAME_EMBEDDING", "class": "ISSUED_ID", "behavior": "NAME", "anonymize": "No", "candidates": "No", "standardize": "", "expression": "", "comparison": "SEMANTIC_SIMILARITY_COMP", "matchKey": "Yes", "version": 1, "elementList": [{"element": "EMBEDDING", "expressed": "No", "compared": "Yes", "derived": "Yes", "display": "No"}, {"element": "ALGORITHM", "expressed": "No", "compared": "Yes", "derived": "No", "display": "No"}, {"element": "LABEL", "expressed": "No", "compared": "No", "derived": "No", "display": "Yes"}]}
+addFeature {"feature": "NAME_EMBEDDING", "class": "ISSUED_ID", "behavior": "NAME", "anonymize": "No", "candidates": "Yes", "standardize": "", "expression": "", "comparison": "SEMANTIC_SIMILARITY_COMP", "matchKey": "Yes", "version": 1, "elementList": [{"element": "EMBEDDING", "expressed": "No", "compared": "Yes", "derived": "Yes", "display": "No"}, {"element": "ALGORITHM", "expressed": "No", "compared": "Yes", "derived": "No", "display": "No"}, {"element": "LABEL", "expressed": "No", "compared": "No", "derived": "No", "display": "Yes"}]}
+addFeature {"feature": "BIZNAME_EMBEDDING", "class": "ISSUED_ID", "behavior": "NAME", "anonymize": "No", "candidates": "Yes", "standardize": "", "expression": "", "comparison": "SEMANTIC_SIMILARITY_COMP", "matchKey": "Yes", "version": 1, "elementList": [{"element": "EMBEDDING", "expressed": "No", "compared": "Yes", "derived": "Yes", "display": "No"}, {"element": "ALGORITHM", "expressed": "No", "compared": "Yes", "derived": "No", "display": "No"}, {"element": "LABEL", "expressed": "No", "compared": "No", "derived": "No", "display": "Yes"}]}
 
 addAttribute {"attribute": "NAME_EMBEDDING", "class": "IDENTIFIER", "feature": "NAME_EMBEDDING", "element": "EMBEDDING", "required": "Yes", "default": null, "internal": "No"}
 addAttribute {"attribute": "NAME_ALGORITHM", "class": "IDENTIFIER", "feature": "NAME_EMBEDDING", "element": "ALGORITHM", "required": "No", "default": null, "internal": "Yes"}
@@ -208,14 +216,210 @@ Person record:
 }
 ```
 
-#### Sample programs
+## Usage Examples
 
-These sample programs have a couple of prerequisites:
+All programs require:
+1. The `SENZING_ENGINE_CONFIGURATION_JSON` environment variable must be set with an appropriate license
+2. Fine-tuned SentenceTransformer models for personal and business names
+3. Senzing environment sourced: `source ~/senzingv4/setupEnv`
+4. Python virtual environment activated: `source venv/bin/activate`
 
-1. The `SENZING_ENGINE_CONFIGURATION_JSON` environment variable must be set with an appropriate license.
-1. A model for personal and business names must be supplied. These models are assumed to be sentence transformer models.
+### Data Loading
 
-- `sz_load_embeddings.py`: Loads a Senzing formatted JSONL file into Senzing creating embeddings for both personal and business names.
+**Load embeddings into Senzing:**
+```bash
+# Small test load (500 records)
+python sz_load_embeddings.py \
+  -i data/test_samples/opensanctions_test_500.jsonl \
+  --name_model_path ~/roncewind.git/PersonalNames/output/labse_finetuned/Epoch-000-fine_tuned_model \
+  --biz_model_path ~/roncewind.git/BizNames/output/phase9b_labse/Epoch-001-fine_tuned_model \
+  --truncate_dim 512 \
+  --threads 24 \
+  2> load_500_stderr.log
+```
 
-- `sz_search_embeddings.py`: Search Senzing using both attribute and cosine similarity on either business or personal names.
+### Interactive Search & Debugging
 
+**Search by name (interactive):**
+```bash
+# Search for a business
+python sz_search_embeddings.py --type business \
+  --model_path ~/roncewind.git/BizNames/output/phase9b_labse/Epoch-001-fine_tuned_model \
+  "Puget Sound Energy"
+
+# Search for a person
+python sz_search_embeddings.py --type personal \
+  --model_path ~/roncewind.git/PersonalNames/output/labse_finetuned/Epoch-000-fine_tuned_model \
+  "José Luis Sanz Ruiz"
+```
+
+**Debug search with comprehensive analysis:**
+```bash
+# Full analysis showing all search modes
+python sz_debug_search.py "Carlyle" --type business --top 20
+
+# Test with abbreviation (shows embedding value)
+python sz_debug_search.py "PSE" --type business
+
+# Cross-script search (Latin query for Cyrillic/Arabic names)
+python sz_debug_search.py "Alexander Makarov" --type personal
+
+# Verbose output with full JSON
+python sz_debug_search.py "Puget Sound Energy" --type business --verbose
+```
+
+The debug tool shows 6 sections:
+- 0️⃣ Name-only search (baseline - traditional matching)
+- 1️⃣ Embedding-only search (semantic similarity without name)
+- 2️⃣ PostgreSQL cosine similarity (direct embedding search)
+- 3️⃣ Candidate keys (what embeddings retrieved)
+- 4️⃣ Final ranked entities (name + embedding search)
+- 5️⃣ Analysis (comparison and diagnostics)
+
+### Production Validation
+
+**Extract test samples from loaded data:**
+```bash
+python sz_extract_validation_samples.py \
+  --input data/test_samples/opensanctions_test_500.jsonl \
+  --output data/test_samples/validation_samples_100.jsonl \
+  --sample_size 100 \
+  --filter both \
+  --seed 42
+```
+
+**Run production validation:**
+```bash
+# Basic validation (Senzing only)
+python sz_validate_production.py \
+  --input data/test_samples/validation_samples_100.jsonl \
+  --name_model_path ~/roncewind.git/PersonalNames/output/labse_finetuned/Epoch-000-fine_tuned_model \
+  --biz_model_path ~/roncewind.git/BizNames/output/phase9b_labse/Epoch-001-fine_tuned_model \
+  --truncate_dim 512 \
+  --output results/validation_results.json
+
+# With PostgreSQL embedding validation
+python sz_validate_production.py \
+  --input data/test_samples/validation_samples_100.jsonl \
+  --name_model_path ~/roncewind.git/PersonalNames/output/labse_finetuned/Epoch-000-fine_tuned_model \
+  --biz_model_path ~/roncewind.git/BizNames/output/phase9b_labse/Epoch-001-fine_tuned_model \
+  --validate_pg \
+  --pg_database senzing \
+  --output results/validation_results.json
+```
+
+**Compare validation runs:**
+```bash
+python sz_compare_validations.py results/validation_*.json
+python sz_compare_validations.py -o results/comparison.txt results/validation_*.json
+```
+
+### Model Evaluation
+
+**Evaluate model with test triplets:**
+```bash
+# Quick test (100 triplets)
+python sz_evaluate_model.py \
+  --type business \
+  --model_path ~/roncewind.git/BizNames/output/phase9b_labse/Epoch-001-fine_tuned_model \
+  --triplets ~/roncewind.git/BizNames/output/opensanctions_test_triplets.jsonl \
+  --test_set opensanctions \
+  --sample 100 \
+  --output results/quick_test.json
+
+# Full evaluation
+python sz_evaluate_model.py \
+  --type business \
+  --model_path ~/roncewind.git/BizNames/output/phase9b_labse/Epoch-001-fine_tuned_model \
+  --triplets ~/roncewind.git/BizNames/output/opensanctions_test_triplets.jsonl \
+  --test_set opensanctions \
+  --output results/opensanctions_business.json
+```
+
+**Compare model results:**
+```bash
+python sz_compare_models.py results/*.json
+python sz_compare_models.py -o comparison_report.txt results/*.json
+```
+
+### Utility Tools
+
+**Extract aliases from data:**
+```bash
+python sz_extract_aliases.py -i /data/OpenSanctions/senzing.json -o aliases.jsonl
+```
+
+**Sample data for testing:**
+```bash
+python sz_sample_data.py -i input_file.jsonl -o output_file.jsonl --sample_size 500
+```
+
+**Cross-validate Senzing vs PostgreSQL:**
+```bash
+python sz_cross_validate.py \
+  --pg_biz_db embeddings_db \
+  --pg_names_db personalnames_db \
+  --output cross_validation_report.txt
+```
+
+### Test Data Examples
+
+**Good test cases for embeddings:**
+
+*Abbreviations (name-only fails, embeddings succeed):*
+- "Carlyle" → finds "The Carlyle Group"
+- "PSE" → finds "Puget Sound Energy"
+- "J Sanz" → finds "José Luis Sanz Ruiz"
+
+*Cross-script queries (semantic matching across scripts):*
+- "Alexander Makarov" → finds "Александр Сергеевич Макаров" (Cyrillic)
+- "Ucha Surmanidze" → finds "أوتشا سورمانيدزه" (Arabic)
+- "China Power" → finds "中国电建集团" (Chinese)
+
+## Troubleshooting
+
+**Check database status:**
+```bash
+psql -d G2 -c "SELECT COUNT(*) as records,
+  (SELECT COUNT(*) FROM bizname_embedding) as biz_embeddings,
+  (SELECT COUNT(*) FROM name_embedding) as name_embeddings
+FROM dsrc_record;"
+```
+
+**Check for database locks:**
+```bash
+psql -d G2 -c "SELECT * FROM pg_locks WHERE NOT granted;"
+```
+
+**Monitor load progress:**
+```bash
+tail -f load.log
+```
+
+**Test environment setup:**
+```bash
+python test_setup.py         # Basic tests
+python test_setup.py --full  # Includes embedding test
+```
+
+## Documentation
+
+- **[TESTING.md](TESTING.md)** - Comprehensive testing workflow and metrics
+- **[LOAD_INSTRUCTIONS.md](LOAD_INSTRUCTIONS.md)** - Detailed loading instructions
+- **[POSTGRESQL_TUNING.md](POSTGRESQL_TUNING.md)** - PostgreSQL performance tuning
+- **[FINDINGS_SUMMARY.md](FINDINGS_SUMMARY.md)** - Investigation findings
+- **[CLAUDE.md](CLAUDE.md)** - Quick reference for common tasks
+
+#### Helpful selects
+
+```
+SELECT COUNT(*) as records, (SELECT COUNT(*) FROM bizname_embedding) as biz_emb, (SELECT COUNT(*) FROM name_embedding) as name_emb FROM dsrc_record;
+```
+
+# TODO
+
+- Select senzing uses for cosine similarity:
+```
+SELECT LIB_FEAT_ID FROM BIZNAME_EMBEDDING WHERE 1-(EMBEDDING <=> $1) > 0.43 ORDER BY EMBEDDING <=> $2,LIB_FEAT_ID ASC LIMIT 100
+```
+Curious about where the 0.43 comes from?

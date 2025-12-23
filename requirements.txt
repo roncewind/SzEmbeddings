@@ -1,0 +1,8 @@
+# Core dependencies
+numpy
+orjson
+torch
+sentence-transformers
+
+# Note: senzing and senzing-core come from local installation
+# Run: source ~/senzingv4/setupEnv

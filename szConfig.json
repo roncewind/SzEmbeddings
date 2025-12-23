@@ -2204,6 +2204,18 @@
                 "EXEC_ORDER": 2,
                 "FELEM_ID": 128,
                 "FTYPE_ID": 1001
+            },
+            {
+                "CFCALL_ID": 1002,
+                "EXEC_ORDER": 1,
+                "FELEM_ID": 127,
+                "FTYPE_ID": 1002
+            },
+            {
+                "CFCALL_ID": 1002,
+                "EXEC_ORDER": 2,
+                "FELEM_ID": 128,
+                "FTYPE_ID": 1002
             }
         ],
         "CFG_CFCALL": [
@@ -2456,6 +2468,11 @@
                 "CFCALL_ID": 1001,
                 "CFUNC_ID": 15,
                 "FTYPE_ID": 1001
+            },
+            {
+                "CFCALL_ID": 1002,
+                "CFUNC_ID": 15,
+                "FTYPE_ID": 1002
             }
         ],
         "CFG_CFRTN": [
