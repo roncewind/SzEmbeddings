@@ -19,8 +19,8 @@ from senzing import (
     SzEngine,
     SzEngineFlags,
     SzBadInputError,
-    SzRetryTimeoutExceededError,
 )
+from senzing.szerror import SzRetryableError, SzError
 
 import senzing_core
 
@@ -140,11 +140,22 @@ try:
                                 print(
                                     result
                                 )  # we would handle pushing to withinfo queues here BUT that is likely a second future task/executor
-                        except (SzRetryTimeoutExceededError, SzBadInputError) as err:
+                        except (SzRetryableError, SzBadInputError) as err:
                                 record = orjson.loads(msg[TUPLE_MSG])
                                 print(
-                                      f'FAILED due to bad data or timeout: {record["DATA_SOURCE"]} : {record["RECORD_ID"]}'
+                                      f'FAILED due to bad data or retryable error: {record["DATA_SOURCE"]} : {record["RECORD_ID"]}'
                                 )
+                        except SzError as err:
+                                # Check for SENZ1001 "too long" errors which are also retryable
+                                error_msg = str(err)
+                                if 'too long' in error_msg.lower() or 'SENZ1001' in error_msg:
+                                    record = orjson.loads(msg[TUPLE_MSG])
+                                    print(
+                                          f'FAILED due to SENZ1001 too long (retryable): {record["DATA_SOURCE"]} : {record["RECORD_ID"]}'
+                                    )
+                                else:
+                                    # Re-raise other Senzing errors
+                                    raise
 
                         messages += 1
 

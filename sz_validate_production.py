@@ -175,8 +175,12 @@ def search_with_embedding(
 
 
 def parse_search_result(result_dict: dict[str, Any], query_time_ms: float) -> SearchResult:
-    """Parse Senzing search result into SearchResult structure."""
-    entity_ids = []
+    """Parse Senzing search result into SearchResult structure.
+
+    NOTE: Senzing returns results in unsorted order. We must sort by score
+    to get proper rankings.
+    """
+    entity_scores = []  # List of (entity_id, combined_score) tuples
     gnr_scores = {}
     emb_scores = {}
 
@@ -185,8 +189,6 @@ def parse_search_result(result_dict: dict[str, Any], query_time_ms: float) -> Se
         entity_id = entity.get("ENTITY", {}).get("RESOLVED_ENTITY", {}).get("ENTITY_ID")
         if entity_id is None:
             continue
-
-        entity_ids.append(entity_id)
 
         # Extract feature scores
         feature_scores = entity.get("MATCH_INFO", {}).get("FEATURE_SCORES", {})
@@ -201,6 +203,16 @@ def parse_search_result(result_dict: dict[str, Any], query_time_ms: float) -> Se
                       feature_scores.get("BIZNAME_EMBEDDING", []))
         if emb_feature:
             emb_scores[entity_id] = emb_feature[0].get("SCORE", 0)
+
+        # Calculate combined score for sorting
+        # Prefer embedding score if available (though it usually isn't due to Senzing bug),
+        # otherwise use GNR score
+        combined_score = emb_scores.get(entity_id, gnr_scores.get(entity_id, 0))
+        entity_scores.append((entity_id, combined_score))
+
+    # Sort by score (descending) - highest scores first
+    entity_scores.sort(key=lambda x: x[1], reverse=True)
+    entity_ids = [entity_id for entity_id, score in entity_scores]
 
     return SearchResult(entity_ids, gnr_scores, emb_scores, query_time_ms)
 

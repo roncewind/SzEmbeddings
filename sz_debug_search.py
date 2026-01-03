@@ -20,9 +20,9 @@ import time
 from typing import List, Tuple
 
 import psycopg2
+from sentence_transformers import SentenceTransformer
 from senzing import SzEngine, SzEngineFlags
 from senzing_core import SzAbstractFactoryCore
-from sentence_transformers import SentenceTransformer
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(__file__))
@@ -77,8 +77,8 @@ def search_senzing_attribute(
             "NAME_FULL": query_name,
             "NAME_EMBEDDINGS": [{
                 "NAME_LABEL": query_name,
-                "NAME_EMBEDDING": embedding_str,
-                "NAME_ALGORITHM": "LaBSE"
+                "NAME_EMBEDDING": embedding_str
+                # "NAME_ALGORITHM": "LaBSE"
             }]
         }
     else:  # ORGANIZATION
@@ -88,17 +88,24 @@ def search_senzing_attribute(
             "NAME_ORG": query_name,
             "BIZNAME_EMBEDDINGS": [{
                 "BIZNAME_LABEL": query_name,
-                "BIZNAME_EMBEDDING": embedding_str,
-                "BIZNAME_ALGORITHM": "LaBSE"
+                "BIZNAME_EMBEDDING": embedding_str
+                # "BIZNAME_ALGORITHM": "LaBSE"
             }]
         }
 
     search_json = json.dumps(search_record)
+    # print("\n\n===")
+    # print(json.dumps(search_record, ensure_ascii=False))
+    # print("===\n\n")
 
     start_time = time.time()
     result_json = engine.search_by_attributes(
         search_json,
-        SzEngineFlags.SZ_SEARCH_BY_ATTRIBUTES_DEFAULT_FLAGS |
+        # SzEngineFlags.SZ_SEARCH_BY_ATTRIBUTES_DEFAULT_FLAGS |
+        SzEngineFlags.SZ_ENTITY_INCLUDE_ALL_FEATURES |
+        SzEngineFlags.SZ_SEARCH_INCLUDE_ALL_ENTITIES |
+        SzEngineFlags.SZ_ENTITY_INCLUDE_ENTITY_NAME |
+        SzEngineFlags.SZ_ENTITY_INCLUDE_RECORD_SUMMARY |
         SzEngineFlags.SZ_INCLUDE_FEATURE_SCORES |
         SzEngineFlags.SZ_SEARCH_INCLUDE_ALL_CANDIDATES |
         SzEngineFlags.SZ_ENTITY_INCLUDE_RECORD_DATA
@@ -132,7 +139,13 @@ def search_name_only(
     start_time = time.time()
     result_json = engine.search_by_attributes(
         search_json,
-        SzEngineFlags.SZ_SEARCH_BY_ATTRIBUTES_DEFAULT_FLAGS |
+        # SzEngineFlags.SZ_SEARCH_BY_ATTRIBUTES_DEFAULT_FLAGS |
+        SzEngineFlags.SZ_ENTITY_INCLUDE_ALL_FEATURES |
+        SzEngineFlags.SZ_SEARCH_INCLUDE_ALL_ENTITIES |
+        SzEngineFlags.SZ_ENTITY_INCLUDE_ENTITY_NAME |
+        SzEngineFlags.SZ_ENTITY_INCLUDE_RECORD_SUMMARY |
+        SzEngineFlags.SZ_INCLUDE_FEATURE_SCORES |
+        SzEngineFlags.SZ_SEARCH_INCLUDE_STATS |
         SzEngineFlags.SZ_INCLUDE_FEATURE_SCORES |
         SzEngineFlags.SZ_SEARCH_INCLUDE_ALL_CANDIDATES |
         SzEngineFlags.SZ_ENTITY_INCLUDE_RECORD_DATA
@@ -164,8 +177,8 @@ def search_embedding_only(
             "RECORD_TYPE": record_type,
             "NAME_EMBEDDINGS": [{
                 "NAME_LABEL": query_name,
-                "NAME_EMBEDDING": embedding_str,
-                "NAME_ALGORITHM": "LaBSE"
+                "NAME_EMBEDDING": embedding_str
+                # "NAME_ALGORITHM": "LaBSE"
             }]
         }
     else:  # ORGANIZATION
@@ -174,8 +187,8 @@ def search_embedding_only(
             "RECORD_TYPE": record_type,
             "BIZNAME_EMBEDDINGS": [{
                 "BIZNAME_LABEL": query_name,
-                "BIZNAME_EMBEDDING": embedding_str,
-                "BIZNAME_ALGORITHM": "LaBSE"
+                "BIZNAME_EMBEDDING": embedding_str
+                # "BIZNAME_ALGORITHM": "LaBSE"
             }]
         }
 
@@ -184,7 +197,13 @@ def search_embedding_only(
     start_time = time.time()
     result_json = engine.search_by_attributes(
         search_json,
-        SzEngineFlags.SZ_SEARCH_BY_ATTRIBUTES_DEFAULT_FLAGS |
+        # SzEngineFlags.SZ_SEARCH_BY_ATTRIBUTES_DEFAULT_FLAGS |
+        SzEngineFlags.SZ_ENTITY_INCLUDE_ALL_FEATURES |
+        SzEngineFlags.SZ_SEARCH_INCLUDE_ALL_ENTITIES |
+        SzEngineFlags.SZ_ENTITY_INCLUDE_ENTITY_NAME |
+        SzEngineFlags.SZ_ENTITY_INCLUDE_RECORD_SUMMARY |
+        SzEngineFlags.SZ_INCLUDE_FEATURE_SCORES |
+        SzEngineFlags.SZ_SEARCH_INCLUDE_STATS |
         SzEngineFlags.SZ_INCLUDE_FEATURE_SCORES |
         SzEngineFlags.SZ_SEARCH_INCLUDE_ALL_CANDIDATES |
         SzEngineFlags.SZ_ENTITY_INCLUDE_RECORD_DATA
@@ -278,7 +297,7 @@ def print_results(
     print("-" * 120)
 
     has_emb_scores = False
-    for i, entity in enumerate(sorted_emb_only[:10], 1):
+    for i, entity in enumerate(sorted_emb_only, 1):
         entity_id = entity.get("ENTITY", {}).get("RESOLVED_ENTITY", {}).get("ENTITY_ID", "N/A")
 
         # Try to get embedding score
@@ -316,7 +335,7 @@ def print_results(
 
     if not has_emb_scores and emb_only_entities:
         print()
-        print(f"⚠️  NOTE: Embedding scores NOT in FEATURE_SCORES (config issue - embeddings not used for scoring)")
+        print(f"⚠️  NOTE: Embedding scores NOT in FEATURE_SCORES")
 
     if not emb_only_entities:
         print("  (No results)")
@@ -376,19 +395,31 @@ def print_results(
     print(f"\n{'='*120}")
     print(f"4️⃣  SENZING FINAL RANKED ENTITIES (After Scoring)")
     print(f"{'='*120}")
-    print(f"Query Time: {sz_time:.1f}ms | Total Results: {len(sz_entities)} | Displaying Top: {min(top_k, len(sz_entities))}")
+    print(f"Query Time: {sz_time:.1f}ms | Total Results: {len(sz_entities)} | Displaying: ALL")
     print()
 
-    # Sort entities by NAME score (descending)
+    # Sort entities by combined score using probabilistic OR
     def get_name_score(entity):
         feature_scores = entity.get("MATCH_INFO", {}).get("FEATURE_SCORES", {})
         if "NAME" in feature_scores and feature_scores["NAME"]:
             return feature_scores["NAME"][0].get("SCORE", 0)
         return 0
 
-    sorted_entities = sorted(sz_entities, key=get_name_score, reverse=True)[:top_k]
+    def get_embedding_score(entity):
+        feature_scores = entity.get("MATCH_INFO", {}).get("FEATURE_SCORES", {})
+        if embedding_feature in feature_scores and feature_scores[embedding_feature]:
+            return feature_scores[embedding_feature][0].get("SCORE", 0)
+        return 0
 
-    print(f"{'Rank':<6} {'Score':<8} {'Entity ID':<12} {'Match Level':<16} {'Match Key':<25} {'Name':<40}")
+    def get_combined_score(entity):
+        """Probabilistic OR: treats scores as independent evidence for match"""
+        name = get_name_score(entity) / 100.0
+        emb = get_embedding_score(entity) / 100.0
+        return 100.0 * (1 - (1 - name) * (1 - emb))
+
+    sorted_entities = sorted(sz_entities, key=get_combined_score, reverse=True)
+
+    print(f"{'Rank':<6} {'Combined':<9} {'Emb':<6} {'Name':<6} {'Entity ID':<12} {'Match Level':<16} {'Match Key':<25} {'Name':<40}")
     print("-" * 120)
 
     # Counters for summary
@@ -435,10 +466,12 @@ def print_results(
         if len(name) > 40:
             name = name[:37] + "..."
 
-        # Get NAME score
+        # Get scores
         name_score = get_name_score(entity)
+        emb_score = get_embedding_score(entity)
+        combined_score = get_combined_score(entity)
 
-        print(f"{i:<6} {name_score:<8} {entity_id:<12} {match_level:<16} {match_key:<25} {name:<40}")
+        print(f"{i:<6} {combined_score:<9.1f} {emb_score:<6} {name_score:<6} {entity_id:<12} {match_level:<16} {match_key:<25} {name:<40}")
 
         # Count embedding contribution (but don't print per entity)
         candidate_keys = match_info.get("CANDIDATE_KEYS", {})
@@ -461,11 +494,18 @@ def print_results(
         print()
         print("Embedding Contribution:")
         if emb_retrieved_no_score > 0:
-            print(f"  ⚠️  {emb_retrieved_no_score} entities retrieved via {embedding_feature} but NO embedding score (ranked by NAME only)")
+            print(f"  ⚠️  {emb_retrieved_no_score} entities retrieved via {embedding_feature} but NO embedding score")
         if emb_retrieved_with_score > 0:
             print(f"  ✅ {emb_retrieved_with_score} entities retrieved via {embedding_feature} AND have embedding scores")
         if not_via_embeddings > 0:
             print(f"  ℹ️  {not_via_embeddings} entities NOT retrieved via embeddings (traditional NAME matching)")
+
+        print()
+        print("ℹ️  Combined Score Calculation:")
+        print(f"    Formula: 100 * (1 - (1 - Name/100) * (1 - Emb/100))  [Probabilistic OR]")
+        print(f"    Treats NAME and {embedding_feature} scores as independent evidence")
+        print(f"    High score in either dimension yields high combined score")
+        print(f"    Examples: Name=100,Emb=0→100 | Name=0,Emb=100→100 | Name=50,Emb=50→75")
 
     # Section 5: Analysis
     print(f"\n{'='*120}")
@@ -511,8 +551,7 @@ def print_results(
     print(f"  Entities scored with embeddings:    {emb_scored}/{len(sz_entities)}")
 
     if emb_retrieved > 0 and emb_scored == 0:
-        print(f"\n  ⚠️  ISSUE: Embeddings used for retrieval but NOT for scoring!")
-        print(f"  ⚠️  All {emb_retrieved} entities ranked by NAME scores only")
+        print(f"  ⚠️  All {emb_retrieved} entities ranked but embedding scores not returned")
     elif emb_retrieved > 0 and emb_scored > 0:
         print(f"\n  ✅ Embeddings used for both retrieval and scoring")
     elif emb_retrieved == 0:
