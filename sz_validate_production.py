@@ -1109,6 +1109,10 @@ def main():
     parser.add_argument("--pg_password", type=str, default="senzing",
                        help="PostgreSQL password (default: senzing)")
 
+    # ONNX support
+    parser.add_argument("--onnx", action="store_true",
+                       help="Use ONNX models instead of PyTorch models")
+
     args = parser.parse_args()
 
     # Configure logging
@@ -1133,11 +1137,17 @@ def main():
         print(f"📌 Matryoshka truncation: {args.truncate_dim} dimensions")
 
     # Load models
-    print(f"⏳ Loading personal names model from {args.name_model_path}...")
-    name_model = SentenceTransformer(args.name_model_path)
-
-    print(f"⏳ Loading business names model from {args.biz_model_path}...")
-    biz_model = SentenceTransformer(args.biz_model_path)
+    if args.onnx:
+        from onnx_sentence_transformer import load_onnx_model
+        print(f"⏳ Loading personal names ONNX model from {args.name_model_path}...")
+        name_model = load_onnx_model(args.name_model_path)
+        print(f"⏳ Loading business names ONNX model from {args.biz_model_path}...")
+        biz_model = load_onnx_model(args.biz_model_path)
+    else:
+        print(f"⏳ Loading personal names model from {args.name_model_path}...")
+        name_model = SentenceTransformer(args.name_model_path)
+        print(f"⏳ Loading business names model from {args.biz_model_path}...")
+        biz_model = SentenceTransformer(args.biz_model_path)
 
     # Initialize Senzing
     print("⏳ Initializing Senzing engine...")

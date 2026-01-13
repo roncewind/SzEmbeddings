@@ -46,6 +46,57 @@ def get_senzing_config() -> str:
     return settings
 
 
+def extract_algorithm_name(model_path: str) -> str:
+    """
+    Extract algorithm name from model config or directory path.
+
+    Attempts to read model_config.json from the model directory.
+    If it exists and contains base_model and model_type, constructs
+    a descriptive name. Otherwise falls back to directory basename.
+
+    Args:
+        model_path: Path to model directory (e.g.,
+                   "~/roncewind.git/BizNames/output/phase10_quantization/onnx_fp16_direct/")
+
+    Returns:
+        Algorithm name (e.g., "LaBSE-onnx_fp16" or "Epoch-000-onnx-fp16-native")
+
+    Examples:
+        With model_config.json containing base_model="sentence-transformers/LaBSE", model_type="onnx_fp16":
+          -> "LaBSE-onnx_fp16"
+
+        Without model_config.json or missing fields:
+          "/path/to/Epoch-000-onnx-fp16-native" -> "Epoch-000-onnx-fp16-native"
+    """
+    import json
+    from pathlib import Path
+
+    # Normalize path
+    model_path_obj = Path(model_path).expanduser().resolve()
+
+    # Try to read model_config.json
+    config_file = model_path_obj / "model_config.json"
+    if config_file.exists():
+        try:
+            with open(config_file, 'r') as f:
+                config = json.load(f)
+
+            base_model = config.get('base_model', '')
+            model_type = config.get('model_type', '')
+
+            # If both fields exist, construct descriptive name
+            if base_model and model_type:
+                # Extract short name from base_model (e.g., "sentence-transformers/LaBSE" -> "LaBSE")
+                base_name = base_model.split('/')[-1]
+                return f"{base_name}-{model_type}"
+        except (json.JSONDecodeError, IOError) as e:
+            # If config read fails, fall back to directory name
+            logging.debug(f"Could not read model_config.json from {model_path}: {e}")
+
+    # Fallback: use directory basename
+    return model_path_obj.name
+
+
 def get_embedding(
     name: str, model: SentenceTransformer, truncate_dim: int | None = None
 ) -> npt.NDArray[np.float16]:

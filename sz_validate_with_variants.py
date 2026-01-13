@@ -347,12 +347,19 @@ def main():
                        help="Output JSON file")
     parser.add_argument("--limit", type=int,
                        help="Limit number of test cases (for testing)")
+    parser.add_argument("--onnx", action="store_true",
+                       help="Use ONNX models instead of PyTorch models")
 
     args = parser.parse_args()
 
     print("⏳ Loading models...")
-    name_model = SentenceTransformer(args.name_model_path)
-    biz_model = SentenceTransformer(args.biz_model_path)
+    if args.onnx:
+        from onnx_sentence_transformer import load_onnx_model
+        name_model = load_onnx_model(args.name_model_path)
+        biz_model = load_onnx_model(args.biz_model_path)
+    else:
+        name_model = SentenceTransformer(args.name_model_path)
+        biz_model = SentenceTransformer(args.biz_model_path)
 
     print("⏳ Initializing Senzing...")
     settings = get_senzing_config()
