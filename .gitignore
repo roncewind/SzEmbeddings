@@ -214,6 +214,7 @@ data/
 output/
 results/
 archive/
+*.data
 
 # claude
 CLAUDE.md

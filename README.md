@@ -4,6 +4,18 @@
 Look at [Postgres README](README-postgres.md) for information about using PostgreSQL
 for vector operations and some details about which ANN method to use.
 
+## Embedding Models
+
+This project uses fine-tuned LaBSE models for semantic name matching. Models are available in multiple formats:
+
+| Deployment | Format | Location | Notes |
+|------------|--------|----------|-------|
+| **GPU Server** | ONNX FP16 | `~/999gz.git/name_model/*/onnx_fp16/` | 50% smaller, optimized for GPU |
+| **CPU Server** | ONNX INT8 | `~/999gz.git/name_model/*/onnx_int8/` | 75% smaller, best variant accuracy |
+| **Development** | PyTorch FP32 | PersonalNames/BizNames repos | For debugging/fine-tuning |
+
+**Important:** Use the same model format for loading AND searching. See [ONNX_EVALUATION.md](ONNX_EVALUATION.md) for benchmark results and [CLAUDE.md](CLAUDE.md) for usage examples.
+
 ## References:
 
 - https://senzing.com/docs/quickstart/quickstart_api/

@@ -13,6 +13,8 @@ but significantly better on fuzzy variants.
 import json
 import argparse
 import time
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Any, Tuple
 from dataclasses import dataclass, asdict
 from sentence_transformers import SentenceTransformer
@@ -31,6 +33,7 @@ class SearchResult:
     name_scores: Dict[int, int]
     embedding_scores: Dict[int, int]
     query_time_ms: float
+    embedding_compute_time_ms: float = 0.0  # Time to compute embedding (if applicable)
 
 
 @dataclass
@@ -54,7 +57,8 @@ class TestResult:
     embedding_found: bool
     embedding_rank: int
     embedding_score: int
-    embedding_time_ms: float
+    embedding_time_ms: float  # DB search time only
+    embedding_compute_time_ms: float = 0.0  # Time to compute embedding vector
 
 
 def lookup_entity_id(engine: SzEngine, record_id: str, data_source: str) -> int:
@@ -142,7 +146,11 @@ def search_with_embedding(engine: SzEngine, model: SentenceTransformer,
     search_label = "NAME_LABEL" if record_type == "PERSON" else "BIZNAME_LABEL"
     search_attr = "NAME_FULL" if record_type == "PERSON" else "NAME_ORG"
 
+    # Time embedding computation separately
+    emb_start = time.time()
     embedding = get_embedding(name, model, truncate_dim)
+    embedding_compute_time_ms = (time.time() - emb_start) * 1000
+
     attributes = json.dumps({
         search_attr: name,
         search_label: name,
@@ -160,7 +168,9 @@ def search_with_embedding(engine: SzEngine, model: SentenceTransformer,
     query_time_ms = (time.time() - start) * 1000
 
     result_dict = json.loads(result)
-    return parse_search_result(result_dict, query_time_ms)
+    search_result = parse_search_result(result_dict, query_time_ms)
+    search_result.embedding_compute_time_ms = embedding_compute_time_ms
+    return search_result
 
 
 def run_test_case(engine: SzEngine, name_model: SentenceTransformer,
@@ -207,7 +217,8 @@ def run_test_case(engine: SzEngine, name_model: SentenceTransformer,
         embedding_found=emb_found,
         embedding_rank=emb_rank or 999,
         embedding_score=emb_score,
-        embedding_time_ms=emb_result.query_time_ms
+        embedding_time_ms=emb_result.query_time_ms,
+        embedding_compute_time_ms=emb_result.embedding_compute_time_ms
     )
 
 
@@ -235,7 +246,7 @@ def calculate_metrics(results: List[TestResult], search_mode: str) -> Dict[str, 
     found_ranks = [r for r in ranks if r < 999]
     mean_rank = sum(found_ranks) / len(found_ranks) if found_ranks else 999
 
-    return {
+    metrics = {
         "found_count": sum(found),
         "not_found_count": total - sum(found),
         "not_found_rate": ((total - sum(found)) / total) * 100,
@@ -246,6 +257,20 @@ def calculate_metrics(results: List[TestResult], search_mode: str) -> Dict[str, 
         "latency_p50_ms": sorted(times)[len(times) // 2],
         "latency_p95_ms": sorted(times)[int(len(times) * 0.95)]
     }
+
+    # Add embedding compute time metrics for embedding search mode
+    if search_mode == "embedding":
+        emb_compute_times = [r.embedding_compute_time_ms for r in results]
+        metrics["embedding_compute_avg_ms"] = sum(emb_compute_times) / len(emb_compute_times)
+        metrics["embedding_compute_p50_ms"] = sorted(emb_compute_times)[len(emb_compute_times) // 2]
+        metrics["embedding_compute_p95_ms"] = sorted(emb_compute_times)[int(len(emb_compute_times) * 0.95)]
+        # Total time = embedding compute + DB search
+        total_times = [r.embedding_compute_time_ms + r.embedding_time_ms for r in results]
+        metrics["total_latency_avg_ms"] = sum(total_times) / len(total_times)
+        metrics["total_latency_p50_ms"] = sorted(total_times)[len(total_times) // 2]
+        metrics["total_latency_p95_ms"] = sorted(total_times)[int(len(total_times) * 0.95)]
+
+    return metrics
 
 
 def print_summary(exact_results: List[TestResult], variant_results: List[TestResult]):
@@ -277,7 +302,10 @@ def print_summary(exact_results: List[TestResult], variant_results: List[TestRes
         print(f"  Recall@1:  {emb_metrics['recall_at_k'][1]:.1f}%")
         print(f"  Recall@10: {emb_metrics['recall_at_k'][10]:.1f}%")
         print(f"  MRR:       {emb_metrics['mrr']:.4f}")
-        print(f"  Avg Time:  {emb_metrics['latency_avg_ms']:.1f}ms")
+        print(f"  Timing:")
+        print(f"    Embedding Compute: {emb_metrics['embedding_compute_avg_ms']:.1f}ms avg (P50: {emb_metrics['embedding_compute_p50_ms']:.1f}ms, P95: {emb_metrics['embedding_compute_p95_ms']:.1f}ms)")
+        print(f"    DB Search:         {emb_metrics['latency_avg_ms']:.1f}ms avg (P50: {emb_metrics['latency_p50_ms']:.1f}ms, P95: {emb_metrics['latency_p95_ms']:.1f}ms)")
+        print(f"    Total:             {emb_metrics['total_latency_avg_ms']:.1f}ms avg (P50: {emb_metrics['total_latency_p50_ms']:.1f}ms, P95: {emb_metrics['total_latency_p95_ms']:.1f}ms)")
 
         print(f"\n  ✅ Result: Both perform equally well on exact matches")
 
@@ -299,7 +327,10 @@ def print_summary(exact_results: List[TestResult], variant_results: List[TestRes
         print(f"  Recall@1:  {emb_metrics['recall_at_k'][1]:.1f}%")
         print(f"  Recall@10: {emb_metrics['recall_at_k'][10]:.1f}%")
         print(f"  MRR:       {emb_metrics['mrr']:.4f}")
-        print(f"  Avg Time:  {emb_metrics['latency_avg_ms']:.1f}ms")
+        print(f"  Timing:")
+        print(f"    Embedding Compute: {emb_metrics['embedding_compute_avg_ms']:.1f}ms avg (P50: {emb_metrics['embedding_compute_p50_ms']:.1f}ms, P95: {emb_metrics['embedding_compute_p95_ms']:.1f}ms)")
+        print(f"    DB Search:         {emb_metrics['latency_avg_ms']:.1f}ms avg (P50: {emb_metrics['latency_p50_ms']:.1f}ms, P95: {emb_metrics['latency_p95_ms']:.1f}ms)")
+        print(f"    Total:             {emb_metrics['total_latency_avg_ms']:.1f}ms avg (P50: {emb_metrics['total_latency_p50_ms']:.1f}ms, P95: {emb_metrics['total_latency_p95_ms']:.1f}ms)")
 
         improvement = emb_metrics['recall_at_k'][10] - name_metrics['recall_at_k'][10]
         if improvement > 5:
@@ -349,17 +380,40 @@ def main():
                        help="Limit number of test cases (for testing)")
     parser.add_argument("--onnx", action="store_true",
                        help="Use ONNX models instead of PyTorch models")
+    parser.add_argument("--cpu", action="store_true",
+                       help="Force CPU execution (ignore CUDA)")
+    parser.add_argument("--parallel", action="store_true",
+                       help="Enable parallel test case processing")
+    parser.add_argument("--threads", type=int, default=8,
+                       help="Number of threads for parallel processing (default: 8)")
 
     args = parser.parse_args()
+
+    # Determine device
+    if args.cpu:
+        device = "cpu"
+        print("📌 Forcing CPU execution")
+    else:
+        import torch
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        print(f"📌 Using device: {device}")
 
     print("⏳ Loading models...")
     if args.onnx:
         from onnx_sentence_transformer import load_onnx_model
-        name_model = load_onnx_model(args.name_model_path)
-        biz_model = load_onnx_model(args.biz_model_path)
+        # Force CPU provider if --cpu flag is set
+        providers = ['CPUExecutionProvider'] if args.cpu else None
+        # Use single-threaded inference per worker when parallel mode is enabled
+        intra_threads = 1 if args.parallel else None
+        name_model = load_onnx_model(args.name_model_path, providers=providers, intra_op_num_threads=intra_threads)
+        biz_model = load_onnx_model(args.biz_model_path, providers=providers, intra_op_num_threads=intra_threads)
+        if args.parallel:
+            print(f"📌 Parallel mode: {args.threads} workers, single-threaded ONNX inference per worker")
     else:
-        name_model = SentenceTransformer(args.name_model_path)
-        biz_model = SentenceTransformer(args.biz_model_path)
+        name_model = SentenceTransformer(args.name_model_path, device=device)
+        biz_model = SentenceTransformer(args.biz_model_path, device=device)
+        if args.parallel:
+            print(f"📌 Parallel mode: {args.threads} workers")
 
     print("⏳ Initializing Senzing...")
     settings = get_senzing_config()
@@ -424,23 +478,59 @@ def main():
     exact_results = []
     variant_results = []
 
+    def run_tests_sequential(cases: List[Dict], query_type: str, progress_interval: int = 50) -> List[TestResult]:
+        """Run test cases sequentially."""
+        results = []
+        for i, case in enumerate(cases, 1):
+            if i % progress_interval == 0:
+                print(f"  Progress: {i}/{len(cases)}")
+            result = run_test_case(sz_engine, name_model, biz_model, case, args.truncate_dim, query_type)
+            results.append(result)
+        return results
+
+    def run_tests_parallel(cases: List[Dict], query_type: str, num_threads: int) -> List[TestResult]:
+        """Run test cases in parallel using ThreadPoolExecutor."""
+        results = []
+        completed = [0]  # Use list to allow modification in nested function
+        lock = threading.Lock()
+
+        def process_case(case):
+            return run_test_case(sz_engine, name_model, biz_model, case, args.truncate_dim, query_type)
+
+        with ThreadPoolExecutor(max_workers=num_threads) as executor:
+            # Submit all tasks
+            future_to_case = {executor.submit(process_case, case): case for case in cases}
+
+            # Collect results as they complete
+            for future in as_completed(future_to_case):
+                result = future.result()
+                with lock:
+                    results.append(result)
+                    completed[0] += 1
+                    if completed[0] % 50 == 0 or completed[0] == len(cases):
+                        print(f"  Progress: {completed[0]}/{len(cases)}")
+
+        return results
+
     if exact_cases:
         print(f"\n⏳ Running exact name tests ({len(exact_cases)} cases)...")
-        for i, case in enumerate(exact_cases, 1):
-            if i % 50 == 0:
-                print(f"  Progress: {i}/{len(exact_cases)}")
-            result = run_test_case(sz_engine, name_model, biz_model, case, args.truncate_dim, "exact")
-            exact_results.append(result)
-        print(f"✅ Completed exact name tests")
+        start_time = time.time()
+        if args.parallel:
+            exact_results = run_tests_parallel(exact_cases, "exact", args.threads)
+        else:
+            exact_results = run_tests_sequential(exact_cases, "exact")
+        elapsed = time.time() - start_time
+        print(f"✅ Completed exact name tests in {elapsed:.1f}s ({len(exact_cases)/elapsed:.1f} cases/sec)")
 
     if variant_cases:
         print(f"\n⏳ Running variant tests ({len(variant_cases)} cases)...")
-        for i, case in enumerate(variant_cases, 1):
-            if i % 10 == 0:
-                print(f"  Progress: {i}/{len(variant_cases)}")
-            result = run_test_case(sz_engine, name_model, biz_model, case, args.truncate_dim, "variant")
-            variant_results.append(result)
-        print(f"✅ Completed variant tests")
+        start_time = time.time()
+        if args.parallel:
+            variant_results = run_tests_parallel(variant_cases, "variant", args.threads)
+        else:
+            variant_results = run_tests_sequential(variant_cases, "variant", progress_interval=10)
+        elapsed = time.time() - start_time
+        print(f"✅ Completed variant tests in {elapsed:.1f}s ({len(variant_cases)/elapsed:.1f} cases/sec)")
 
     # Print summary
     print_summary(exact_results, variant_results)

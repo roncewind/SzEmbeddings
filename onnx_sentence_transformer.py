@@ -1,8 +1,13 @@
 #!/usr/bin/env python
 """
-ONNX wrapper for sentence-transformers models.
+ONNX/ORT wrapper for sentence-transformers models.
 
-Provides a compatible API with SentenceTransformer for ONNX models.
+Provides a compatible API with SentenceTransformer for ONNX and ORT format models.
+
+Supports:
+- ORT format (.ort) - Pre-optimized, fastest loading
+- ONNX format (.onnx) - Standard format
+- FP16 quantized models - Auto-detected, uses CUDA when available
 """
 
 import json
@@ -22,40 +27,98 @@ class ONNXSentenceTransformer:
     Provides the same .encode() API as SentenceTransformer.
     """
 
-    def __init__(self, model_path: str, providers: List[str] = None):
+    def __init__(self, model_path: str, providers: List[str] = None, intra_op_num_threads: int = None):
         """
         Load ONNX model and tokenizer.
 
         Args:
             model_path: Path to directory containing model.onnx and configs
             providers: ONNX Runtime providers (default: ['CPUExecutionProvider'])
+            intra_op_num_threads: Number of threads for intra-op parallelism.
+                                  Set to 1 for parallel loading (multiple workers).
+                                  Default (None) uses all cores per inference.
         """
         self.model_path = Path(model_path)
+        self.intra_op_num_threads = intra_op_num_threads
+
+        # Track if providers were explicitly specified
+        providers_explicitly_set = providers is not None
 
         # Default to CPU
         if providers is None:
             providers = ['CPUExecutionProvider']
 
-        # Load ONNX model - try both naming conventions
-        onnx_file = self.model_path / 'model.onnx'
-        if not onnx_file.exists():
-            # Try alternate name used by some models
-            onnx_file = self.model_path / 'transformer_fp16.onnx'
-            if not onnx_file.exists():
-                raise FileNotFoundError(f"ONNX model not found: expected 'model.onnx' or 'transformer_fp16.onnx' in {self.model_path}")
+        # Load model - try ORT format first (pre-optimized), then ONNX formats
+        model_file = None
+        is_ort_format = False
 
-        # For FP16 models, prefer CUDA if available
-        try:
-            import onnx
-            model_proto = onnx.load(str(onnx_file))
-            has_fp16 = any(init.data_type == 10 for init in model_proto.graph.initializer)  # 10 = FLOAT16
-            if has_fp16 and 'CUDAExecutionProvider' not in providers:
-                print(f"   ⚠️  FP16 model detected, adding CUDAExecutionProvider for better support")
+        # Check for ORT format first (fastest loading)
+        ort_file = self.model_path / 'model.ort'
+        if ort_file.exists():
+            model_file = ort_file
+            is_ort_format = True
+            print(f"   Loading ORT format model (pre-optimized): {ort_file.name}")
+
+        # Fall back to ONNX formats
+        if model_file is None:
+            onnx_file = self.model_path / 'model.onnx'
+            if onnx_file.exists():
+                model_file = onnx_file
+            else:
+                # Try alternate name used by some models
+                onnx_file = self.model_path / 'transformer_fp16.onnx'
+                if onnx_file.exists():
+                    model_file = onnx_file
+
+        if model_file is None:
+            raise FileNotFoundError(
+                f"Model not found: expected 'model.ort', 'model.onnx', or 'transformer_fp16.onnx' in {self.model_path}"
+            )
+
+        # Enable CUDA for FP16 models (both ONNX and ORT formats)
+        # Only auto-detect if providers weren't explicitly specified
+        if not providers_explicitly_set and 'CUDAExecutionProvider' not in providers:
+            use_cuda = False
+
+            # First check model_config.json for model_type (works for both ONNX and ORT)
+            model_config_file = self.model_path / 'model_config.json'
+            if model_config_file.exists():
+                try:
+                    with open(model_config_file) as f:
+                        fp16_config = json.load(f)
+                    model_type = fp16_config.get('model_type', '')
+                    if model_type.endswith('fp16'):
+                        use_cuda = True
+                        format_type = "ORT" if is_ort_format else "ONNX"
+                        print(f"   {format_type} FP16 model detected (from config), using CUDAExecutionProvider")
+                except:
+                    pass
+
+            # Fall back to checking for FP16 weights in the model file
+            if not use_cuda and not is_ort_format:
+                try:
+                    import onnx
+                    model_proto = onnx.load(str(model_file))
+                    has_fp16 = any(init.data_type == 10 for init in model_proto.graph.initializer)  # 10 = FLOAT16
+                    if has_fp16:
+                        use_cuda = True
+                        print(f"   ONNX FP16 model detected (from weights), using CUDAExecutionProvider")
+                except:
+                    pass
+
+            if use_cuda:
                 providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
-        except:
-            pass
 
-        self.session = ort.InferenceSession(str(onnx_file), providers=providers)
+        # Create session options for thread configuration
+        session_options = ort.SessionOptions()
+        if self.intra_op_num_threads is not None:
+            session_options.intra_op_num_threads = self.intra_op_num_threads
+            session_options.inter_op_num_threads = 1  # Single thread for graph execution
+            print(f"   ONNX threads: intra_op={self.intra_op_num_threads}, inter_op=1")
+
+        # Create inference session
+        # ORT format is auto-detected by .ort extension
+        self.session = ort.InferenceSession(str(model_file), sess_options=session_options, providers=providers)
 
         # Load tokenizer - may be in subdirectory
         tokenizer_path = self.model_path / 'tokenizer'
@@ -275,11 +338,12 @@ class ONNXSentenceTransformer:
 
             # Apply Dense layer if present (may be for Matryoshka truncation or post-processing)
             if self.dense_weight is not None:
-                # Apply: output = pooled @ dense_weight.T + dense_bias
+                # Apply: output = activation(pooled @ dense_weight.T + dense_bias)
                 pooled = np.matmul(pooled, self.dense_weight.T)
                 if self.dense_bias is not None:
                     pooled = pooled + self.dense_bias  # Broadcasting
-                # Apply activation function if specified
+
+                # Apply activation function if specified (check various naming patterns)
                 if self.dense_activation and 'Tanh' in str(self.dense_activation):
                     pooled = np.tanh(pooled)
 
@@ -304,18 +368,21 @@ class ONNXSentenceTransformer:
         return embeddings
 
 
-def load_onnx_model(model_path: str, providers: List[str] = None):
+def load_onnx_model(model_path: str, providers: List[str] = None, intra_op_num_threads: int = None):
     """
     Load ONNX sentence-transformer model.
 
     Args:
         model_path: Path to directory containing model.onnx
         providers: ONNX Runtime providers (default: CPUExecutionProvider)
+        intra_op_num_threads: Number of threads for intra-op parallelism.
+                              Set to 1 for parallel loading (multiple workers).
+                              Default (None) uses all cores per inference.
 
     Returns:
         ONNXSentenceTransformer instance
     """
-    return ONNXSentenceTransformer(model_path, providers=providers)
+    return ONNXSentenceTransformer(model_path, providers=providers, intra_op_num_threads=intra_op_num_threads)
 
 
 if __name__ == '__main__':

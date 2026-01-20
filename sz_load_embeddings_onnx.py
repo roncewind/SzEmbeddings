@@ -196,17 +196,19 @@ def add_record_to_senzing(
         error_msg = str(err)
         logger.error(f"Senzing error: {entity.get('RECORD_ID', 'unknown')} - {error_msg}")
 
-        # SENZ1001 "too long" errors are retryable based on our analysis
-        if 'too long' in error_msg.lower() or 'SENZ1001' in error_msg:
+        # "too long" errors (e.g., name exceeds varchar(300) limit) are NOT retryable
+        # These records will be skipped - the field would need to be truncated or the schema changed
+        if 'too long' in error_msg.lower() or 'SENZ1001' in error_msg or '22001' in error_msg:
+            logger.warning(f"SKIPPING record with field too long: {entity.get('RECORD_ID', 'unknown')} - this record will NOT be retried")
             if save_failures:
                 with failed_records_lock:
                     failed_records.append({
                         'entity': entity,
                         'error': error_msg,
-                        'error_type': 'retryable',
+                        'error_type': 'too_long',  # Non-retryable
                         'timestamp': datetime.now().isoformat()
                     })
-            return (False, 'retryable')
+            return (False, 'too_long')
 
         # Other non-retryable Senzing errors
         if save_failures:
@@ -523,18 +525,34 @@ if __name__ == "__main__":
 
     # Handle retry based on retry mode
     if args.retry == 'auto' and failed_records:
-        # Automatic retry
-        still_failing = retry_failed_records(failed_records, sz_engine, retry_delay=args.retry_delay)
+        # Separate "too_long" errors (non-retryable) from other errors
+        too_long_records = [r for r in failed_records if r.get('error_type') == 'too_long']
+        retryable_records = [r for r in failed_records if r.get('error_type') != 'too_long']
 
-        # Save still-failing records to file if any
-        if still_failing:
-            print(f"WARNING: {len(still_failing)} records still failing after retry")
+        if too_long_records:
+            print(f"\n{'='*80}")
+            print(f"SKIPPED RECORDS (field too long - NOT retryable): {len(too_long_records)}")
+            print(f"{'='*80}")
+            for r in too_long_records:
+                record_id = r.get('entity', {}).get('RECORD_ID', 'unknown')
+                logger.warning(f"   SKIPPED: {record_id} - field exceeds database column limit")
+            print(f"{'='*80}\n")
+
+        # Only retry records that are actually retryable
+        still_failing = retry_failed_records(retryable_records, sz_engine, retry_delay=args.retry_delay)
+
+        # Save still-failing records and too_long records to file if any
+        all_unresolved = still_failing + too_long_records
+        if all_unresolved:
+            print(f"WARNING: {len(all_unresolved)} records unresolved ({len(still_failing)} retry failures + {len(too_long_records)} too_long)")
             print(f"Saving to {args.retry_output}")
             with open(args.retry_output, 'w') as f:
-                for record in still_failing:
+                for record in all_unresolved:
                     f.write(json.dumps(record) + '\n')
+        elif retryable_records:
+            print(f"All retryable records resolved successfully!")
         else:
-            print(f"All failed records resolved successfully!")
+            print(f"No retryable records (only {len(too_long_records)} too_long records skipped)")
 
     elif args.retry == 'manual' and failed_records:
         # Save to file for manual retry
