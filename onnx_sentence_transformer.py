@@ -8,6 +8,7 @@ Supports:
 - ORT format (.ort) - Pre-optimized, fastest loading
 - ONNX format (.onnx) - Standard format
 - FP16 quantized models - Auto-detected, uses CUDA when available
+- PyTorch-compatible mode - Full dense layer with output truncation at inference
 """
 
 import json
@@ -137,6 +138,13 @@ class ONNXSentenceTransformer:
                 self.config = json.load(f)
             self.max_seq_length = self.config['max_seq_length']
             self.embedding_dimension = self.config['embedding_dimension']
+
+            # Check for PyTorch-compatible mode (truncate output at inference)
+            self.truncate_output_dim = self.config.get('truncate_output_dim', None)
+            if self.truncate_output_dim:
+                print(f"   PyTorch-compatible mode: will truncate output to {self.truncate_output_dim}d at inference")
+                # Update reported embedding dimension to match truncated output
+                self.embedding_dimension = self.truncate_output_dim
         elif sentence_config_file.exists():
             # Personal names model format
             with open(sentence_config_file, 'r') as f:
@@ -148,6 +156,8 @@ class ONNXSentenceTransformer:
                 'max_seq_length': self.max_seq_length,
                 'embedding_dimension': self.embedding_dimension
             }
+            # No truncation mode for legacy configs
+            self.truncate_output_dim = None
         else:
             raise FileNotFoundError(f"Model config not found: expected 'model_config.json' or 'sentence_transformers_config.json' in {self.model_path}")
 
@@ -347,7 +357,12 @@ class ONNXSentenceTransformer:
                 if self.dense_activation and 'Tanh' in str(self.dense_activation):
                     pooled = np.tanh(pooled)
 
-            # Normalize if requested
+            # Apply output truncation if in PyTorch-compatible mode
+            # This truncates AFTER the full dense layer, matching PyTorch behavior
+            if self.truncate_output_dim and pooled.shape[-1] > self.truncate_output_dim:
+                pooled = pooled[:, :self.truncate_output_dim]
+
+            # Normalize if requested (AFTER truncation for Matryoshka)
             if normalize_embeddings:
                 pooled = self._normalize_embeddings(pooled)
 

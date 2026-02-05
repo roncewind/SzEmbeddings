@@ -443,6 +443,7 @@ if __name__ == "__main__":
                         help='Output file for records that still fail after retry (default: still_failing.jsonl)')
     parser.add_argument('--debug', action='store_true', help='Enable debug logging (default: INFO level)')
     parser.add_argument('--verbose', action='store_true', help='Enable verbose Senzing logging')
+    parser.add_argument('--cuda', action='store_true', help='Use CUDA GPU acceleration for ONNX inference')
     args = parser.parse_args()
 
     # Configure logging based on --debug flag
@@ -470,10 +471,17 @@ if __name__ == "__main__":
     print("=" * 80)
 
     print("\nLoading ONNX models...")
-    name_model = load_onnx_model(args.name_model_path)
+    # Set providers based on --cuda flag
+    if args.cuda:
+        providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+        print("   Using CUDA GPU acceleration")
+    else:
+        providers = None  # Let load_onnx_model use default/auto-detect
+
+    name_model = load_onnx_model(args.name_model_path, providers=providers)
     print(f"   Personal names: {name_model.embedding_dimension}d, max_seq={name_model.max_seq_length}")
 
-    biz_model = load_onnx_model(args.biz_model_path)
+    biz_model = load_onnx_model(args.biz_model_path, providers=providers)
     print(f"   Business names: {biz_model.embedding_dimension}d, max_seq={biz_model.max_seq_length}")
 
     print("\nConnecting to Senzing...")
