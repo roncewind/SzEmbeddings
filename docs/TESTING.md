@@ -710,3 +710,49 @@ The metrics tell us:
 - Whether they complement GNR (rescue rates)
 
 **Next steps:** Once the new PersonalNames model finishes training, run the full evaluation workflow and compare results with the existing baseline.
+
+---
+
+## AAR Experiment (Alias-Augmented Retrieval)
+
+**Date:** 2026-01-30
+**Status:** Complete - Not Recommended
+
+### Overview
+
+AAR (Alias-Augmented Retrieval) was evaluated as a potential improvement to business name retrieval. The approach generates stripped aliases (legal forms removed like LLC, Inc, GmbH, etc.) at index time to improve recall.
+
+### Results Summary
+
+| Metric | Baseline | AAR | Delta | Verdict |
+|--------|----------|-----|-------|---------|
+| **Recall@0.85** | 30.5% | 30.5% | +0.0% | Neutral |
+| **Avg Candidates** | 0.9 | 1.1 | +0.2 | Worse |
+| **Index Size** | 19K rows | 30K rows | +58% | Worse |
+
+**Conclusion:** AAR provides **no recall benefit** while increasing index size by 58% and candidate volume by 22%. **Not recommended for production.**
+
+### Key Findings
+
+1. **Legal form stripping doesn't help**: The E5 model already handles legal form variations adequately
+2. **Hard cases remain hard**: CJK names (7.9% recall) and location-prefixed names (3.6% recall) need different solutions
+3. **30% ceiling**: Overall recall at 0.85 threshold suggests the threshold may be too aggressive or the model needs improvement
+
+### Files
+
+- **Results**: `results/AAR_EXPERIMENT_RESULTS.md` (full analysis)
+- **Script**: `sz_retrieval_experiment.py`
+- **Runner**: `run_retrieval_experiment.sh`
+- **JSON Output**: `results/retrieval_experiment.json`
+
+### Methodology
+
+The experiment used a "black-box scorer framework" with:
+- 10,000 business entities from OpenSanctions
+- 1,000 stratified queries (weighted toward hard cases)
+- 3-seed confidence check (seeds: 42, 123, 456)
+- Leave-one-out evaluation (query excluded from index)
+- Threshold sweep: 0.80, 0.83, 0.85, 0.88, 0.90
+- Per-slice analysis: Script type, name length, location prefix, multi-alias
+
+See `results/AAR_EXPERIMENT_RESULTS.md` for complete methodology and detailed breakdown.
